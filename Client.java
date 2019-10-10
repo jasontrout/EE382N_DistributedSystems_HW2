@@ -1,45 +1,31 @@
-import java.io.*;
-import java.net.*;
-import java.util.*;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.net.SocketTimeoutException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Scanner;
 
 
 public class Client {
-    private DatagramSocket udpSocket;
+    private static int connectionTimeOut = 100;
+    private static int receiveTimeOut = 5000;
     private Socket tcpSocket;
     private DataInputStream tcpInputStream;
     private DataOutputStream tcpOutputStream;
-    private int targetTCP;
-    private int targetUDP;
-    private int clientUDP;
-    private String host;
-    private boolean isTCP;
+    private List<String> serverList;
 
 
     public Client(){}
 
-    public Client(String host, int tcpPort, int udpPort, boolean isTCP) throws IOException {
-        this.host = host;
-        this.targetTCP = tcpPort;
-        this.targetUDP = udpPort;
-        this.isTCP = isTCP;
-        tcpSocket = new Socket(host, tcpPort);
-        tcpInputStream = new DataInputStream(tcpSocket.getInputStream());
-        tcpOutputStream = new DataOutputStream(tcpSocket.getOutputStream());
-        ServerSocket serverSocket = new ServerSocket(0);
-        clientUDP = serverSocket.getLocalPort();
-        udpSocket = new DatagramSocket(clientUDP);
+    public Client(List<String> input) {
+        serverList = input;
     }
 
-    public String getHost() {
-        return host;
-    }
-
-    public int getTargetUDP() {
-        return targetUDP;
-    }
-
-    public void setTCP(boolean TCP) {
-        isTCP = TCP;
+    public List<String> getServerList() {
+        return serverList;
     }
 
     public DataInputStream getTcpInputStream() {
@@ -50,115 +36,104 @@ public class Client {
         return tcpOutputStream;
     }
 
-    public DatagramSocket getUdpSocket() {
-        return udpSocket;
+    public Socket getTcpSocket() {
+        return tcpSocket;
     }
 
-    public static String readMultipleMsgTCP(Client client) throws IOException {
+    public void setTcpSocket(Socket tcpSocket) {
+        this.tcpSocket = tcpSocket;
+    }
+
+    public void setTcpInputStream(DataInputStream tcpInputStream) {
+        this.tcpInputStream = tcpInputStream;
+    }
+
+    public void setTcpOutputStream(DataOutputStream tcpOutputStream) {
+        this.tcpOutputStream = tcpOutputStream;
+    }
+
+    public static void sendMsg(String st, Client client) {
+        for(String address : client.getServerList()) {
+            String host = address.split(":")[0];
+            int port = Integer.valueOf(address.split(":")[1]);
+            try {
+                Socket socket = new Socket();
+                socket.connect(new InetSocketAddress(host, port), connectionTimeOut);
+                //socket.setSoTimeout(receiveTimeOut);
+                client.setTcpSocket(socket);
+                client.setTcpInputStream(new DataInputStream(client.getTcpSocket().getInputStream()));
+                client.setTcpOutputStream(new DataOutputStream(client.getTcpSocket().getOutputStream()));
+                client.getTcpOutputStream().writeBytes(st + "\n");
+                break;
+            }catch (SocketTimeoutException e){
+                System.out.println(String.format("after %s ms, Socket time out, can not connect with server, no message sent",Integer.toString(connectionTimeOut)));
+            }catch (IOException e1){
+                System.out.println("IO Exception");
+            }
+        }
+    }
+
+    public static String readMsg(Client client) {
         String result = "";
-        while(!result.contains("<EOM>")) {
+        try {
             byte[] receiveFromServerData = new byte[1024];
             client.getTcpInputStream().read(receiveFromServerData);
             String receiveFromServer = new String(receiveFromServerData).replaceAll("\\u0000", "");
-            result = result + receiveFromServer;
+            result = receiveFromServer;
+            result = result.replace("<EOM>", "");
+        }catch (SocketTimeoutException e){
+            System.out.println("Socket time out, can not connect with server, no message received");
+            try {
+                client.getTcpSocket().close();
+            } catch (IOException e1) {
+               // e1.printStackTrace();
+            }
+        }catch (IOException e2){
+            System.out.println("IO Exception");
         }
-        result = result.replace("<EOM>", "");
+
         return result;
     }
 
-    public static void sendMsgTCP(String st, Client client) throws IOException {
-        client.getTcpOutputStream().writeBytes(st + "\n");
-        //client.getTcpOutputStream().close();
-    }
-
-    public static void sendMsgUDP(String st, Client client) throws IOException {
-        byte[] sendData = st.getBytes();
-        InetAddress address = InetAddress.getByName(client.getHost());
-        int port = client.getTargetUDP();
-        DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, address, port);
-        client.getUdpSocket().send(sendPacket);
-    }
-
-    public static String readMsgUDP(Client client){
-        byte[] receiveData = new byte[1500];
-        DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
-        try {
-            client.getUdpSocket().setSoTimeout(1*1000);
-            client.getUdpSocket().receive(receivePacket);
-        } catch (Exception e) {
-        }
-        return new String(receivePacket.getData()).trim();
-    }
-
-    public static void sendMsg(String st, Client client) throws IOException {
-        if(client.isTCP){
-            sendMsgTCP(st, client);
-        }else{
-            sendMsgUDP(st, client);
-        }
-    }
-
-    public static String readMsg(Client client) throws IOException {
-        if(client.isTCP){
-            return readMultipleMsgTCP(client);
-        }else{
-            return readMsgUDP(client);
+    public static String executeCmd(String cmd, Client client) throws IOException {
+        sendMsg(cmd,client);
+        String search = readMsg(client);
+        if(search.length()==0){
+            if(!client.getTcpSocket().isClosed()){
+                client.getTcpSocket().close();
+            }
+            return "Disconnect with server, please input your command again";
+        }else {
+            return search;
         }
     }
 
     public static void main(String args[]) throws IOException {
-        String hostAddress ;
-        int tcpPort ;
-        int udpPort ;
 
-        if (args.length != 3) {
-            System.out.println("ERROR: Provide 3 arguments");
-            System.out.println("\t(1) <hostAddress>: the address of the server");
-            System.out.println("\t(2) <tcpPort>: the port number for TCP connection");
-            System.out.println("\t(3) <udpPort>: the port number for UDP connection");
-            System.exit(-1);
+        List<String> inputList = new ArrayList<>();
+        Scanner sc = new Scanner(System.in);
+        int numServer = sc.nextInt();
+        sc.nextLine();
+        for (int i = 0; i < numServer; i++) {
+            String address = sc.nextLine();
+            inputList.add(address);
         }
 
-        hostAddress = args[0];
-        tcpPort = Integer.parseInt(args[1]);
-        udpPort = Integer.parseInt(args[2]);
-
         //start client
-        Client client = new Client(hostAddress, tcpPort, udpPort, true);
-        //
-        Scanner sc = new Scanner(System.in);
+        Client client = new Client(inputList);
+
         while(sc.hasNextLine()) {
             String cmd = sc.nextLine();
             String[] tokens = cmd.split(" ");
 
-            if (tokens[0].equals("setmode")) {
-                if(tokens[1].equals("T")){
-                    client.setTCP(true);
-                    System.out.println("we are using TCP");
-                }else if(tokens[1].equals("U")){
-                    client.setTCP(false);
-                    System.out.println("we are using UDP");
-                }else{
-                    System.out.println("ERROR: No such command");
-                }
-            }
-            else if (tokens[0].equals("purchase")) {
-                sendMsg(cmd,client);
-                String purchase = readMsg(client);
-                System.out.println(purchase);
-
-            } else if (tokens[0].equals("cancel")) {
-                sendMsg(cmd,client);
-                String cancel = readMsg(client);
-                System.out.println(cancel);
+            if (tokens[0].equals("reserve")) {
+                System.out.println(executeCmd(cmd, client));
+            } else if (tokens[0].equals("bookSeat")) {
+                System.out.println(executeCmd(cmd, client));
             } else if (tokens[0].equals("search")) {
-                sendMsg(cmd,client);
-                String search = readMsg(client);
-                System.out.println(search);
-            } else if (tokens[0].equals("list")) {
-                sendMsg(cmd,client);
-                String list = readMsg(client);
-                System.out.println(list);
+                System.out.println(executeCmd(cmd, client));
+            } else if (tokens[0].equals("delete")) {
+                System.out.println(executeCmd(cmd, client));
             } else {
                 System.out.println("ERROR: No such command");
             }
