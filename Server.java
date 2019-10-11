@@ -19,17 +19,25 @@ import java.net.SocketException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Map;
 import java.util.PriorityQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.Queue;
 import java.util.TreeMap;
 import java.util.Scanner;
 
 
 // Specifies the commands the server will support.
 interface IServer {
-  String executeCommand(String command);
+  void requestLock();
+  void releaseLock();
+  void onReceiveAck();
+  void onReceiveRequest(int ts, int serverId);
+  String executeCommand(Socket client, String command);
 }
 
 public class Server implements IServer {
@@ -61,20 +69,24 @@ public class Server implements IServer {
       return "";
     } 
 
+    // requestFullSync
+    public synchronized String requestFullSync() {
+      return "";
+    }
+
   }
 
-  // Comparator for sorting LamportClockEntry.
-  class LamportClockEntryComparator implements Comparator<LamportClockEntry> {
+  class LamportQueueEntryComparator implements Comparator<LamportQueueEntry> {
     @Override
-    public int compare(LamportClockEntry lce1, LamportClockEntry lce2) { 
-      if (lce1.getTs() < lce2.getTs()) {
+    public int compare(LamportQueueEntry qe1, LamportQueueEntry qe2) { 
+      if (qe1.getTs() < qe2.getTs()) {
         return 1;
-      } else if (lce1.getTs() > lce2.getTs()) {
+      } else if (qe1.getTs() > qe2.getTs()) {
         return -1;
       } else {
-        if (lce1.getServerId() < lce2.getServerId()) {
+        if (qe1.getServerId() < qe2.getServerId()) {
           return 1;
-        } else if (lce1.getServerId() > lce2.getServerId()) {
+        } else if (qe1.getServerId() > qe2.getServerId()) {
           return -1;
         } else {
           return 0;
@@ -83,27 +95,129 @@ public class Server implements IServer {
     }
   }
 
-  class LamportClockEntry {
-    private int ts;
-    private int serverId;
+ class LamportQueueEntry {
+   private int ts;
+   private int serverId;
  
-    public LamportClockEntry(int ts, int serverId) {
-      this.ts = ts;
-      this.serverId = serverId;
+   public LamportQueueEntry(int ts, int serverId) {
+     this.ts = ts;
+     this.serverId = serverId;
+   }
+
+   public int getTs() { return ts; }
+   public int getServerId() { return serverId; }
+ } 
+
+ class WaitingQueueThread extends Thread {
+ 
+    private IServer server;
+    private BlockingQueue<WaitingQueueEntry> queue;
+    private WaitingQueueEntry currentEntry;
+    private boolean running;
+    private Object lock = new Object();
+
+    class WaitingQueueEntry {
+      private Socket client;
+      private String command;
+
+      public WaitingQueueEntry(Socket client, String command) { 
+        this.client = client;
+        this.command = command;
+      }
+   
+      public Socket getClient() { return client; }
+      public String getCommand() { return command; } 
     }
 
-    public int getTs() { return ts; }
-    public int getServerId() { return serverId; }
+
+    public WaitingQueueThread(IServer server) { 
+      queue = new LinkedBlockingQueue<>();
+      this.server = server;
+    }
+
+    public void run() {
+      running = true;
+      try {
+        while (running) {
+          synchronized (lock) { 
+            currentEntry = queue.take();
+            server.requestLock();
+            lock.wait();
+          }
+        }
+      } catch (Exception ex) { 
+        System.out.println("Error on run");
+        ex.printStackTrace();
+      }
+    }
+
+    public void addCommand(Socket client, String command) {
+      queue.add(new WaitingQueueEntry(client, command));
+    }
+
+    public String processNextCommand() {
+      synchronized (lock) { 
+        lock.notify();
+      }
+      System.out.println("Processing the Command....");
+      System.out.println(currentEntry.getCommand());
+      return "";
+    }
+  }
+
+  private Map<Integer, TcpReplicaClient> serverIdToReplicaClientMap = new HashMap<>();
+  private PriorityQueue<LamportQueueEntry> queue;
+  private WaitingQueueThread waitingQueueThread;
+
+  @Override
+  public synchronized void requestLock() { 
+    System.out.println("requestLock()");
+    ts++;
+    for (TcpReplicaClient client : serverIdToReplicaClientMap.values()) {
+      client.sendRequestLock();
+    }
+    queue.add(new LamportQueueEntry(ts, serverId));
+    numAcks = 0;
+  }
+ 
+  @Override
+  public synchronized void releaseLock() {
+    System.out.println("releaseLock()");
+    queue.remove();
+    for (TcpReplicaClient client : serverIdToReplicaClientMap.values()) {
+      client.sendReleaseLock();
+    }
+  }
+ 
+  @Override
+  public synchronized void onReceiveAck() {
+    System.out.println("onReceiveAck");
+    numAcks++;
+    if (numAcks == (numServer - 1)) {
+      LamportQueueEntry entry = queue.peek();
+      if (entry.getServerId() == serverId) {
+        waitingQueueThread.processNextCommand();
+      } 
+    }
+  }
+
+  @Override
+  public synchronized void onReceiveRequest(int ts, int serverId) {
+    System.out.println("onReceiveRequest " + ts + " " + serverId);
+    queue.add(new LamportQueueEntry(ts, serverId));
+    for (TcpReplicaClient client : serverIdToReplicaClientMap.values()) {
+      client.sendAck();
+    }
   }
 
   private DataInterface dataInterface = new DataInterface();
-  private PriorityQueue<LamportClockEntry> queue;
-  private Map<Integer, TcpReplicaClient> serverIdToReplicaClientMap = new HashMap<>();
+
   private boolean serverLoaded;
   private int numServer;
   private int numServersConnected;
   private int serverId; // lamport clock server id
   private int ts; // lamport clock timestamp
+  private int numAcks = 0;
 
   // TCP Replica CLient
   class TcpReplicaClient {
@@ -121,24 +235,36 @@ public class Server implements IServer {
       }
     }
 
-    public String requestFullSync() {
+    private void writeCommand(String command) {
       try {
-        DataOutputStream dos = new DataOutputStream(socket.getOutputStream());
-        dos.writeBytes("requestFullSync\n");
-        dos.flush();
+        dos.writeBytes(command + "\n");
       } catch (Exception ex) {
-        System.out.println("Unable to request full sync");
+        System.out.println("Error writing command: " + command);
         ex.printStackTrace();
       }
+    } 
+
+    public String sendRequestFullSync() {
+      writeCommand("requestFullSync");
       return "";
     }
 
-    public void requestLock() { 
-
+    public void sendRequestLock() { 
+      System.out.println("Sending request lock...");
+      writeCommand("requestLock " + ts + " " + serverId);
+      queue.add(new LamportQueueEntry(ts, serverId));
+      numAcks = 0;
     }
 
-    public void ack() { 
+    public void sendReleaseLock() { 
+ 
     }
+
+    public void sendAck() { 
+      System.out.println("Sending ack...");
+      writeCommand("ack");
+    }
+
 
     public void syncSeatReserved(String name, int seatNum) { 
 
@@ -196,7 +322,7 @@ public class Server implements IServer {
             break;
           }
 
-          String response = server.executeCommand(command);
+          String response = server.executeCommand(socket, command);
           if (response == null) { response = "Did not understand command " + command; }
           response += "<EOM>";
           dos.writeBytes(response);
@@ -288,7 +414,8 @@ public class Server implements IServer {
   }
 
   public Server() { 
-    queue = new PriorityQueue(11, new LamportClockEntryComparator());
+    queue = new PriorityQueue(11, new LamportQueueEntryComparator());
+    waitingQueueThread = new WaitingQueueThread(this);
   }
 
   // Parses String to an int.
@@ -303,10 +430,14 @@ public class Server implements IServer {
   }
 
   // Executes command from client and returns a response. Returns null if an unknown command is provided.
-  public String executeCommand(String command) {
+  public String executeCommand(Socket client, String command) {
     String[] tokens = command.split(" ");
     if (tokens[0].equals("reserve") && tokens.length == 2) {
       if (!serverLoaded) { return "Server is not loaded."; }
+      if (waitingQueueThread == null) { System.out.println("wqt null"); } 
+      if (client == null) { System.out.println("client null"); } 
+      if (command == null) { System.out.println("command is null"); }
+      waitingQueueThread.addCommand(client, command);
       String name = tokens[1];
       return dataInterface.reserve(name);
     } else if (tokens[0].equals("bookSeat") && tokens.length == 3) {
@@ -330,17 +461,22 @@ public class Server implements IServer {
         System.out.println("Server is loaded and READY!");
       }
       return "";
-    } else if (tokens[0].equals("requestLock") && tokens.length == 1) {
+    } else if (tokens[0].equals("requestLock") && tokens.length == 3) {
+      int ts = Integer.parseInt(tokens[1]);
+      int serverId = Integer.parseInt(tokens[2]);
+      onReceiveRequest(ts, serverId);
       return "";
+    } else if (tokens[0].equals("requestRelease") && tokens.length == 1) {
+      releaseLock();
     } else if (tokens[0].equals("ack") && tokens.length == 1) {
+      onReceiveAck();
       return "";
-    } else if (tokens[0].equals("seatReserved") && tokens.length == 3) {
-      return "";
-    } else if (tokens[0].equals("seatUnreserved") && tokens.length == 2) {
-      return "";
+    } else if (tokens[0].equals("request") && tokens.length == 1) {
+      onReceiveRequest(1, 1);
     } else {
       return null;
     }
+    return null;
   }
 
   private String getHostFromHostString(String hostString) { 
@@ -362,6 +498,9 @@ public class Server implements IServer {
       String myHostString = serverIdToReplicaHostStringMap.get(myID);
 
       serverIdToReplicaHostStringMap.remove(myID);
+
+      // Start the waiting queue thread.
+      waitingQueueThread.start();
 
       // Start the TCP server.
       TcpServerThread tcpServerThread = new TcpServerThread(getHostFromHostString(myHostString), getPortFromHostString(myHostString), this);
@@ -386,13 +525,13 @@ public class Server implements IServer {
         TcpReplicaClient replicaClient = new TcpReplicaClient(socket, this);
         serverIdToReplicaClientMap.put(serverId, replicaClient);
 
-        replicaClient.requestFullSync();
+        replicaClient.sendRequestFullSync();
 
 
         numReplicaConnectionsRemaining--;
       }
 
- 
+      waitingQueueThread.join(); 
       tcpServerThread.join();
 
 
