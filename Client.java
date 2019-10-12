@@ -59,7 +59,7 @@ public class Client {
             try {
                 Socket socket = new Socket();
                 socket.connect(new InetSocketAddress(host, port), connectionTimeOut);
-                //socket.setSoTimeout(receiveTimeOut);
+                socket.setSoTimeout(receiveTimeOut);
                 client.setTcpSocket(socket);
                 client.setTcpInputStream(new DataInputStream(client.getTcpSocket().getInputStream()));
                 client.setTcpOutputStream(new DataOutputStream(client.getTcpSocket().getOutputStream()));
@@ -68,7 +68,7 @@ public class Client {
             }catch (SocketTimeoutException e){
                 System.out.println(String.format("after %s ms, Socket time out, can not connect with server, no message sent",Integer.toString(connectionTimeOut)));
             }catch (IOException e1){
-                System.out.println("IO Exception");
+                System.out.println(String.format("after %s ms, Socket time out, can not connect with server, no message sent",Integer.toString(connectionTimeOut)));
             }
         }
     }
@@ -76,10 +76,12 @@ public class Client {
     public static String readMsg(Client client) {
         String result = "";
         try {
-            byte[] receiveFromServerData = new byte[1024];
-            client.getTcpInputStream().read(receiveFromServerData);
-            String receiveFromServer = new String(receiveFromServerData).replaceAll("\\u0000", "");
-            result = receiveFromServer;
+            while(!result.contains("<EOM>")) {
+                byte[] receiveFromServerData = new byte[1024];
+                int i = client.getTcpInputStream().read(receiveFromServerData);
+                String receiveFromServer = new String(receiveFromServerData).replaceAll("\\u0000", "");
+                result += receiveFromServer;
+            }
             result = result.replace("<EOM>", "");
         }catch (SocketTimeoutException e){
             System.out.println("Socket time out, can not connect with server, no message received");
@@ -89,7 +91,7 @@ public class Client {
                // e1.printStackTrace();
             }
         }catch (IOException e2){
-            System.out.println("IO Exception");
+            System.out.println("IO Exception, can not connect with server");
         }
 
         return result;
