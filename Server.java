@@ -209,22 +209,22 @@ public class Server implements IServer {
                   int seatNum = Integer.parseInt(response.replace("Seat assigned to you is ", "").trim());
                   replicateAddToAllReplicaServers(name, seatNum);
                 }
-                client.writeCommand(response);
+                client.writeCommand(response + "<EOM>");
             }else if (tokens[0].equals("bookSeat") && tokens.length == 3) {
                 String name = tokens[1];
                 int seatNum = parseInt(tokens[2]);
                 String response = dataInterface.bookSeat(name, seatNum);
                 replicateAddToAllReplicaServers(name, seatNum);
-                client.writeCommand(response);
+                client.writeCommand(response + "<EOM>");
             } else if (tokens[0].equals("search") && tokens.length == 2) {
                 String name = tokens[1];
                 String response = dataInterface.search(name);
-                client.writeCommand(response);
+                client.writeCommand(response + "<EOM>");
             } else if (tokens[0].equals("delete") && tokens.length == 2) {
                 String name = tokens[1];
                 String response = dataInterface.delete(name);
                 replicateDeleteToAllReplicaServers(name);
-                client.writeCommand(response);
+                client.writeCommand(response + "<EOM>");
             }
             if (numServer > 1) {
             synchronized (lock) {
