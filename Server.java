@@ -180,8 +180,12 @@ public class Server implements IServer {
                 while (running) {
                     synchronized (lock) {
                         currentEntry = queue.take();
-                        server.requestLock();
-                        lock.wait();
+                        if (numServer > 1) {
+                          server.requestLock();
+                          lock.wait();
+                        } else {
+                          processNextCommand();
+                        }
                     }
                 }
             } catch (Exception ex) {
@@ -222,8 +226,10 @@ public class Server implements IServer {
                 replicateDeleteToAllReplicaServers(name);
                 client.writeCommand(response);
             }
+            if (numServer > 1) {
             synchronized (lock) {
                 lock.notify();
+            }
             }
         }
     }
@@ -234,17 +240,12 @@ public class Server implements IServer {
 
     @Override
     public synchronized void requestLock() {
-        if (numServer > 1) {
-          System.out.println("requestLock()");
           ts++;
           for (TcpReplicaClient client : serverIdToReplicaClientMap.values()) {
               client.sendRequestLock();
           }
           queue.add(new LamportQueueEntry(ts, serverId));
           numAcks = 0;
-          } else {
-            waitingQueueThread.processNextCommand();
-          }
     }
 
     @Override
