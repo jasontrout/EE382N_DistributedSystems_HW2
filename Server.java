@@ -20,6 +20,8 @@ interface IServer {
     void onReceiveRelease(int serverId);
     String executeCommand(Socket client, String command);
     Server.DataInterface getDataInterface();
+    void replicateAddToAllReplicaServers(String name, int seatNum);
+    void replicateDeleteToAllReplicaServers(String name);
 }
 
 public class Server implements IServer {
@@ -199,11 +201,16 @@ public class Server implements IServer {
             if (tokens[0].equals("reserve") && tokens.length == 2) {
                 String name = tokens[1];
                 String response = server.getDataInterface().reserve(name);
+                if (response.startsWith("Seat assigned to you is ")) {
+                  int seatNum = Integer.parseInt(response.replace("Seat assigned to you is ", "").trim());
+                  replicateAddToAllReplicaServers(name, seatNum);
+                }
                 client.writeCommand(response);
             }else if (tokens[0].equals("bookSeat") && tokens.length == 3) {
                 String name = tokens[1];
                 int seatNum = parseInt(tokens[2]);
                 String response = dataInterface.bookSeat(name, seatNum);
+                replicateAddToAllReplicaServers(name, seatNum);
                 client.writeCommand(response);
             } else if (tokens[0].equals("search") && tokens.length == 2) {
                 String name = tokens[1];
@@ -212,6 +219,7 @@ public class Server implements IServer {
             } else if (tokens[0].equals("delete") && tokens.length == 2) {
                 String name = tokens[1];
                 String response = dataInterface.delete(name);
+                replicateDeleteToAllReplicaServers(name);
                 client.writeCommand(response);
             }
             synchronized (lock) {
@@ -245,6 +253,20 @@ public class Server implements IServer {
         queue.remove();
         for (TcpReplicaClient client : serverIdToReplicaClientMap.values()) {
             client.sendReleaseLock();
+        }
+    }
+
+    @Override
+    public synchronized void replicateAddToAllReplicaServers(String name, int seatNum) {
+        for (TcpReplicaClient client : serverIdToReplicaClientMap.values()) {
+            client.sendReplicateAdd(name, seatNum);
+        }
+    }
+
+    @Override
+    public synchronized void replicateDeleteToAllReplicaServers(String name) {
+        for (TcpReplicaClient client : serverIdToReplicaClientMap.values()) {
+            client.sendReplicateDelete(name);
         }
     }
 
@@ -368,13 +390,14 @@ public class Server implements IServer {
             writeCommand("ack " + ts);
         }
 
-
-        public void syncSeatReserved(String name, int seatNum) {
-
+        public void sendReplicateAdd(String name, int seatNum) {
+            System.out.println("Sending replicate add " + name + " " + seatNum);
+            writeCommand("replicateAdd " + name + " " + seatNum);
         }
-
-        public void syncSeatUnreserved(int seatNum) {
-
+ 
+        public void sendReplicateDelete(String name) {  
+            System.out.println("Sending replicate delete " + name);
+            writeCommand("replicateDelete " + name);
         }
 
         public void close() {
@@ -555,8 +578,15 @@ public class Server implements IServer {
         } else if (tokens[0].equals("ack") && tokens.length == 2) {
             int ts = Integer.parseInt(tokens[1]);
             onReceiveAck(ts);
-        } else if (tokens[0].equals("request") && tokens.length == 1) {
-            onReceiveRequest(1, 1);
+        } else if (tokens[0].equals("replicateAdd") && tokens.length == 3) {
+            String name = tokens[1];
+            int seatNum = Integer.parseInt(tokens[2]);
+            System.out.println("*** Replication: Adding " + name + " " + seatNum);
+            dataInterface.bookSeat(name, seatNum);
+        } else if (tokens[0].equals("replicateDelete") && tokens.length == 2) {
+            String name = tokens[1];
+            System.out.println("*** Replication: Delete " + name);
+            dataInterface.delete(name);
         } else {
             return null;
         }
