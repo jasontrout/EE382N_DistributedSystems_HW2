@@ -37,8 +37,9 @@ import java.util.HashSet;
 interface IServer {
   void requestLock();
   void releaseLock();
-  void onReceiveAck();
+  void onReceiveAck(int ts);
   void onReceiveRequest(int ts, int serverId);
+  void onReceiveRelease(int serverId);
   String executeCommand(Socket client, String command);
   Server.DataInterface getDataInterface();
 }
@@ -68,6 +69,7 @@ public class Server implements IServer {
         }
         // reserve
         public synchronized String reserve(String name) {
+            System.out.println("Reserving " + name);
             StringBuilder sb = new StringBuilder();
             if(nameToSeatNumMap.containsKey(name)){
                 sb.append("Seat already booked against the name provided");
@@ -154,6 +156,16 @@ public class Server implements IServer {
 
    public int getTs() { return ts; }
    public int getServerId() { return serverId; }
+
+   @Override
+   public boolean equals(Object o) { 
+     if (!(o instanceof LamportQueueEntry)) return false;
+     LamportQueueEntry rhs = (LamportQueueEntry)o;
+     return (rhs.getTs() == ts && rhs.getServerId() == serverId);
+   }
+  
+   @Override
+   public int hashCode() { return 7; }
  } 
 
  class WaitingQueueThread extends Thread {
@@ -204,9 +216,6 @@ public class Server implements IServer {
     }
 
     public void processNextCommand() {
-      synchronized (lock) { 
-        lock.notify();
-      }
       String command = currentEntry.getCommand();
       TcpClient client = currentEntry.getClient();
       String tokens[] = command.split(" ");
@@ -214,6 +223,10 @@ public class Server implements IServer {
         String name = tokens[0];
         String response = server.getDataInterface().reserve(name);
         client.writeCommand(response);
+      }
+      server.releaseLock();
+      synchronized (lock) { 
+        lock.notify();
       }
     }
   }
@@ -243,8 +256,8 @@ public class Server implements IServer {
   }
  
   @Override
-  public synchronized void onReceiveAck() {
-    System.out.println("onReceiveAck");
+  public synchronized void onReceiveAck(int ts) {
+    System.out.println("onReceiveAck(" + ts + ")");
     numAcks++;
     if (numAcks == (numServer - 1)) {
       LamportQueueEntry entry = queue.peek();
@@ -256,10 +269,31 @@ public class Server implements IServer {
 
   @Override
   public synchronized void onReceiveRequest(int ts, int serverId) {
-    System.out.println("onReceiveRequest " + ts + " " + serverId);
+    System.out.println("onReceiveRequest(" + ts + " " + serverId + ")");
     queue.add(new LamportQueueEntry(ts, serverId));
     for (TcpReplicaClient client : serverIdToReplicaClientMap.values()) {
       client.sendAck();
+    }
+  }
+
+  @Override
+  public synchronized void onReceiveRelease(int serverId) {
+    System.out.println("onReceiveRelease(" + serverId + ")");
+    LamportQueueEntry foundEntry = null;
+    for (LamportQueueEntry entry : queue) { 
+      if (entry.getServerId() == serverId) { 
+        foundEntry = entry;
+        break;
+      }
+    }
+    if (foundEntry != null) { 
+      queue.remove(foundEntry);
+    }
+    if (numAcks == (numServer - 1)) {
+      LamportQueueEntry entry = queue.peek();
+      if (entry.getServerId() == serverId) {
+        waitingQueueThread.processNextCommand();
+      } 
     }
   }
 
@@ -326,25 +360,24 @@ public class Server implements IServer {
       }
     } 
 
-    public String sendRequestFullSync() {
+    public void sendRequestFullSync() {
+      System.out.println("Sending requestFullSync");
       writeCommand("requestFullSync");
-      return "";
     }
 
     public void sendRequestLock() { 
-      System.out.println("Sending request lock...");
+      System.out.println("Sending requestLock " + ts + " " + serverId);
       writeCommand("requestLock " + ts + " " + serverId);
-      queue.add(new LamportQueueEntry(ts, serverId));
-      numAcks = 0;
     }
 
-    public void sendReleaseLock() { 
- 
+    public void sendReleaseLock() {
+      System.out.println("Sending releaseLock");
+      writeCommand("releaseLock");
     }
 
     public void sendAck() { 
-      System.out.println("Sending ack...");
-      writeCommand("ack");
+      System.out.println("Sending ack");
+      writeCommand("ack " + ts);
     }
 
 
@@ -405,10 +438,11 @@ public class Server implements IServer {
           }
 
           String response = server.executeCommand(socket, command);
-          if (response == null) { response = "Did not understand command " + command; }
-          response += "<EOM>";
-          dos.writeBytes(response);
-          dos.flush();
+          if (response != null) {
+            response += "<EOM>";
+            dos.writeBytes(response);
+            dos.flush();
+          }
         }
           tcpServerThread.notifyClientDisconnected(clientId, socket);
         } catch (SocketException e) {
@@ -516,12 +550,7 @@ public class Server implements IServer {
     String[] tokens = command.split(" ");
     if (tokens[0].equals("reserve") && tokens.length == 2) {
       if (!serverLoaded) { return "Server is not loaded."; }
-      if (waitingQueueThread == null) { System.out.println("wqt null"); } 
-      if (client == null) { System.out.println("client null"); } 
-      if (command == null) { System.out.println("command is null"); }
       waitingQueueThread.addCommand(new TcpClient(client, this), command);
-      String name = tokens[1];
-      return dataInterface.reserve(name);
     } else if (tokens[0].equals("bookSeat") && tokens.length == 3) {
       if (!serverLoaded) { return "Server is not loaded."; }
       String name = tokens[1];
@@ -542,19 +571,16 @@ public class Server implements IServer {
         serverLoaded = true;
         System.out.println("Server is loaded and READY!");
       }
-      return "";
     } else if (tokens[0].equals("requestLock") && tokens.length == 3) {
       int ts = Integer.parseInt(tokens[1]);
       int serverId = Integer.parseInt(tokens[2]);
       onReceiveRequest(ts, serverId);
-      return "";
-    } else if (tokens[0].equals("requestRelease") && tokens.length == 1) {
-      releaseLock();
-    } else if (tokens[0].equals("ack") && tokens.length == 1) {
-      onReceiveAck();
-      return "";
-    } else if (tokens[0].equals("request") && tokens.length == 1) {
-      onReceiveRequest(1, 1);
+    } else if (tokens[0].equals("releaseLock") && tokens.length == 2) {
+      int serverid = Integer.parseInt(tokens[1]);
+      onReceiveRelease(serverId);
+    } else if (tokens[0].equals("ack") && tokens.length == 2) {
+      int ts = Integer.parseInt(tokens[1]);
+      onReceiveAck(ts);
     } else {
       return null;
     }
