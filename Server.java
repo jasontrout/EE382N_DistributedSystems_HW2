@@ -193,9 +193,6 @@ public class Server implements IServer {
         }
 
         public void processNextCommand() {
-            synchronized (lock) {
-                lock.notify();
-            }
             String command = currentEntry.getCommand();
             TcpClient client = currentEntry.getClient();
             String tokens[] = command.split(" ");
@@ -217,6 +214,9 @@ public class Server implements IServer {
                 String response = dataInterface.delete(name);
                 client.writeCommand(response);
             }
+            synchronized (lock) {
+                lock.notify();
+            }
         }
     }
 
@@ -226,13 +226,17 @@ public class Server implements IServer {
 
     @Override
     public synchronized void requestLock() {
-        System.out.println("requestLock()");
-        ts++;
-        for (TcpReplicaClient client : serverIdToReplicaClientMap.values()) {
-            client.sendRequestLock();
-        }
-        queue.add(new LamportQueueEntry(ts, serverId));
-        numAcks = 0;
+        if (numServer > 1) {
+          System.out.println("requestLock()");
+          ts++;
+          for (TcpReplicaClient client : serverIdToReplicaClientMap.values()) {
+              client.sendRequestLock();
+          }
+          queue.add(new LamportQueueEntry(ts, serverId));
+          numAcks = 0;
+          } else {
+            waitingQueueThread.processNextCommand();
+          }
     }
 
     @Override
@@ -422,10 +426,11 @@ public class Server implements IServer {
                         }
 
                         String response = server.executeCommand(socket, command);
-                        if (response == null) { response = "Did not understand command " + command; }
-                        response += "<EOM>";
-                        dos.writeBytes(response);
-                        dos.flush();
+                        if (response != null) { 
+                          response += "<EOM>";
+                          dos.writeBytes(response);
+                          dos.flush();
+                        }
                     }
                     tcpServerThread.notifyClientDisconnected(clientId, socket);
                 } catch (SocketException e) {
@@ -533,9 +538,6 @@ public class Server implements IServer {
         String[] tokens = command.split(" ");
         if (tokens[0].equals("reserve")||tokens[0].equals("bookSeat")||tokens[0].equals("search")||tokens[0].equals("delete")) {
             if (!serverLoaded) { return "Server is not loaded."; }
-            if (waitingQueueThread == null) { System.out.println("wqt null"); }
-            if (client == null) { System.out.println("client null"); }
-            if (command == null) { System.out.println("command is null"); }
             waitingQueueThread.addCommand(new TcpClient(client, this), command);
         } else if (tokens[0].equals("requestFullSync") && tokens.length == 1) {
             System.out.println("Got requestFullSync");
@@ -544,18 +546,15 @@ public class Server implements IServer {
                 serverLoaded = true;
                 System.out.println("Server is loaded and READY!");
             }
-            return "";
         } else if (tokens[0].equals("requestLock") && tokens.length == 3) {
             int ts = Integer.parseInt(tokens[1]);
             int serverId = Integer.parseInt(tokens[2]);
             onReceiveRequest(ts, serverId);
-            return "";
         } else if (tokens[0].equals("requestRelease") && tokens.length == 1) {
             releaseLock();
         } else if (tokens[0].equals("ack") && tokens.length == 2) {
             int ts = Integer.parseInt(tokens[1]);
             onReceiveAck(ts);
-            return "";
         } else if (tokens[0].equals("request") && tokens.length == 1) {
             onReceiveRequest(1, 1);
         } else {
