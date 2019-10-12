@@ -94,7 +94,7 @@ public class Server implements IServer {
                 int seatNum = nameToSeatNumMap.get(name);
                 nameToSeatNumMap.remove(name);
                 reservedSeat.remove(seatNum);
-                sb.append("Seat allocated to ").append(name).append(" is release, seat number is ").append(seatNum);
+                sb.append("Seat allocated to ").append(name).append(" is released, seat number is ").append(seatNum);
             }else{
                 sb.append("No reservation found for ").append(name);
             }
