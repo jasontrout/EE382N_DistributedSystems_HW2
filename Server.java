@@ -574,6 +574,8 @@ public class Server implements IServer {
 
     public void start(int myID, int numServer, int numSeat, Map<Integer, String> serverIdToReplicaHostStringMap) {
 
+        if (numServer == 1) { serverLoaded = true; }
+
         try {
             this.numSeat = numSeat;
             this.numServer = numServer;
@@ -641,6 +643,7 @@ public class Server implements IServer {
         int myID = sc.nextInt();
         int numServer = sc.nextInt();
         int numSeat = sc.nextInt();
+
 
         Map<Integer, String> serverIdToReplicaHostStringMap = new TreeMap<>();
 
