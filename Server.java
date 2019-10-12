@@ -38,6 +38,7 @@ interface IServer {
   void onReceiveAck();
   void onReceiveRequest(int ts, int serverId);
   String executeCommand(Socket client, String command);
+  Server.DataInterface getDataInterface();
 }
 
 public class Server implements IServer {
@@ -51,7 +52,7 @@ public class Server implements IServer {
 
     // reserve
     public synchronized String reserve(String name) {
-      return "";
+      return "yeee";
     }
 
     // bookSeat
@@ -117,15 +118,15 @@ public class Server implements IServer {
     private Object lock = new Object();
 
     class WaitingQueueEntry {
-      private Socket client;
+      private TcpClient client;
       private String command;
 
-      public WaitingQueueEntry(Socket client, String command) { 
+      public WaitingQueueEntry(TcpClient client, String command) { 
         this.client = client;
         this.command = command;
       }
    
-      public Socket getClient() { return client; }
+      public TcpClient getClient() { return client; }
       public String getCommand() { return command; } 
     }
 
@@ -151,17 +152,24 @@ public class Server implements IServer {
       }
     }
 
-    public void addCommand(Socket client, String command) {
+    public void addCommand(TcpClient client, String command) {
       queue.add(new WaitingQueueEntry(client, command));
     }
 
-    public String processNextCommand() {
+    public void processNextCommand() {
       synchronized (lock) { 
         lock.notify();
       }
-      System.out.println("Processing the Command....");
-      System.out.println(currentEntry.getCommand());
-      return "";
+      String command = currentEntry.getCommand();
+      TcpClient client = currentEntry.getClient();
+      String tokens[] = command.split(" ");
+      System.out.println("Tokens length: " + tokens.length);
+      if (tokens[0].equals("reserve") && tokens.length == 2) {
+        System.out.println("here...");
+        String name = tokens[0];
+        String response = server.getDataInterface().reserve(name);
+        client.writeCommand(response);
+      }
     }
   }
 
@@ -218,6 +226,34 @@ public class Server implements IServer {
   private int serverId; // lamport clock server id
   private int ts; // lamport clock timestamp
   private int numAcks = 0;
+
+  class TcpClient {
+   
+    private IServer server;
+    private Socket socket;
+    private DataOutputStream dos;
+  
+    public TcpClient(Socket socket, IServer server) { 
+      this.socket = socket; 
+      this.server = server;
+      try {
+        this.dos = new DataOutputStream(socket.getOutputStream());
+      } catch (Exception ex) { 
+        System.out.println("Unable to get data output stream");
+        ex.printStackTrace();
+      }
+    }
+
+    private void writeCommand(String command) {
+      try {
+        dos.writeBytes(command + "\n");
+        dos.flush();
+      } catch (Exception ex) {
+        System.out.println("Error writing command: " + command);
+        ex.printStackTrace();
+      }
+    } 
+  }
 
   // TCP Replica CLient
   class TcpReplicaClient {
@@ -437,7 +473,7 @@ public class Server implements IServer {
       if (waitingQueueThread == null) { System.out.println("wqt null"); } 
       if (client == null) { System.out.println("client null"); } 
       if (command == null) { System.out.println("command is null"); }
-      waitingQueueThread.addCommand(client, command);
+      waitingQueueThread.addCommand(new TcpClient(client, this), command);
       String name = tokens[1];
       return dataInterface.reserve(name);
     } else if (tokens[0].equals("bookSeat") && tokens.length == 3) {
@@ -543,6 +579,11 @@ public class Server implements IServer {
     } catch (Exception e) {
       e.printStackTrace();
     }
+  }
+
+  @Override
+  public DataInterface getDataInterface() { 
+    return dataInterface;
   }
 
   public static void main (String[] args) {
