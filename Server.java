@@ -45,36 +45,80 @@ public class Server implements IServer {
   // Data interface
   class DataInterface {
 
-    private Map<String, Integer> nameToSeatNumMap = new HashMap<>();
+        private Map<String, Integer> nameToSeatNumMap = new HashMap<>();
+        private Set<Integer> reservedSeat = new HashSet<>();
 
-    public DataInterface() { }
+        public DataInterface() { }
 
-    // reserve
-    public synchronized String reserve(String name) {
-      return "";
+        //return -1 if no seat available
+        //number of seat needed
+        public int getNextSeat(){
+            int availableSeat = -1;
+            for(int i = 1;i <= numSeat;i ++){
+                if(!reservedSeat.contains(i)){
+                    availableSeat = i;
+                    break;
+                }
+            }
+            return availableSeat;
+        }
+        // reserve
+        public synchronized String reserve(String name) {
+            StringBuilder sb = new StringBuilder();
+            if(nameToSeatNumMap.containsKey(name)){
+                sb.append("Seat already booked against the name provided");
+            }else if(getNextSeat()==-1){
+                sb.append("Sold out - No seat available");
+            }else{
+                int seatNumber = getNextSeat();
+                nameToSeatNumMap.put(name, seatNumber);
+                reservedSeat.add(seatNumber);
+                sb.append("Seat assigned to you is ").append(seatNumber);
+            }
+            return sb.toString();
+        }
+
+        // bookSeat
+        public synchronized String bookSeat(String name, int seatNum) {
+            StringBuilder sb = new StringBuilder();
+            if(nameToSeatNumMap.containsKey(name)) {
+                sb.append("Seat already booked against the name provided");
+            }else if(reservedSeat.contains(seatNum)){
+                sb.append(seatNum).append(" is not available");
+            }else{
+                nameToSeatNumMap.put(name, seatNum);
+                reservedSeat.add(seatNum);
+                sb.append("Seat assigned to you is ").append(seatNum);
+            }
+            return sb.toString();
+        }
+
+        // search
+        public synchronized String search(String name) {
+            StringBuilder sb = new StringBuilder();
+            if(nameToSeatNumMap.containsKey(name)){
+                sb.append("Seat number reserved for ").append(name).append(" is ").append(nameToSeatNumMap.get(name));
+            }else{
+                sb.append("No reservation found for ").append(name);
+            }
+            return sb.toString();
+        }
+
+        // delete
+        public synchronized String delete(String name) {
+            StringBuilder sb = new StringBuilder();
+            if(nameToSeatNumMap.containsKey(name)) {
+                int seatNum = nameToSeatNumMap.get(name);
+                nameToSeatNumMap.remove(name);
+                reservedSeat.remove(seatNum);
+                sb.append("Seat allocated to ").append(name).append(" is release, seat number is ").append(seatNum);
+            }else{
+                sb.append("No reservation found for ").append(name);
+            }
+            return sb.toString();
+        }
+
     }
-
-    // bookSeat
-    public synchronized String bookSeat(String name, int seatNum) {
-      return "";
-    }
-
-    // search
-    public synchronized String search(String name) {
-      return "";
-    }
-
-    // delete
-    public synchronized String delete(String name) {
-      return "";
-    } 
-
-    // requestFullSync
-    public synchronized String requestFullSync() {
-      return "";
-    }
-
-  }
 
   class LamportQueueEntryComparator implements Comparator<LamportQueueEntry> {
     @Override
@@ -212,6 +256,7 @@ public class Server implements IServer {
 
   private DataInterface dataInterface = new DataInterface();
 
+  private int numSeat;
   private boolean serverLoaded;
   private int numServer;
   private int numServersConnected;
@@ -490,7 +535,7 @@ public class Server implements IServer {
   public void start(int myID, int numServer, int numSeat, Map<Integer, String> serverIdToReplicaHostStringMap) {
 
     try {
-
+      this.numSeat = numSeat;
       this.numServer = numServer;
 
       int numReplicaConnectionsRemaining = this.numServer - 1;
